@@ -19,7 +19,7 @@ public interface ImmutableStyles {
             strictBuilder = true,
             overshadowImplementation = true
     )
-    @interface Entity {
+    @interface Simple {
     }
 
 }

@@ -9,7 +9,7 @@ import java.util.function.Predicate;
 
 
 @Value.Immutable
-@ImmutableStyles.Entity
+@ImmutableStyles.Simple
 public interface RetryConfig<E, R> {
     int maxAttempts();
 

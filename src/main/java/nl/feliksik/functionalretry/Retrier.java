@@ -73,7 +73,7 @@ public final class Retrier<E, R> {
     }
 
     @Value.Immutable
-    @ImmutableStyles.Entity
+    @ImmutableStyles.Simple
     interface Attempt<E, R> {
         int attemptNr();
 
