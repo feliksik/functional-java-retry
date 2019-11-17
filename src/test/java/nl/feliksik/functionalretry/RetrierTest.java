@@ -1,74 +1,210 @@
 package nl.feliksik.functionalretry;
 
+
+import io.vavr.collection.List;
 import io.vavr.control.Either;
 import org.junit.Test;
 
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.function.Supplier;
 
+import static org.junit.Assert.*;
+
 public class RetrierTest {
+    enum RetrierScenario {SUCCESS, RETRIABLE, FAIL_PERMANENT, MAX_RETRIED}
 
-    public class ApplicationException extends RuntimeException {
-        public ApplicationException(String s) {
-            super(s);
-        }
-    }
+    private final Either<AppException, String> RESULT_SUCCESS = Either.right("OK");
+    private final Either<AppException, String> RESULT_FAIL_RETRIABLE = Either.left(new AppException(true));
+    private final Either<AppException, String> RESULT_FAIL_PERMANENTLY = Either.left(new AppException(false));
 
+    private TestEventHandler testEventHandler = new TestEventHandler();
 
     @Test
-    public void doRetry() {
+    public void succesOnFirstAttempt() {
+        List<Either<AppException, String>> serviceResponses = List.of(RESULT_SUCCESS);
+        Supplier<Either<AppException, String>> service = createServiceThatReturns(serviceResponses);
 
-        final SomeServiceWithExceptions service = new SomeServiceWithExceptions();
-
-        String input = "some function input";
-
-        // wrap call in functional style, keeping exceptions local and type-specific
-        Supplier<Either<ApplicationException, String>> supplierOfResult = () -> {
-            try {
-                return Either.right(service.callThatMayFail(input));
-            } catch (ApplicationException e) {
-                return Either.left(e);
-            }
-        };
-
-        // configure retrier
-        Retrier<ApplicationException, String> retrier = ImmutableRetrier.<ApplicationException, String>builder()
-                .maxAttempts(3)
-                .backoffFunction(attemptNr -> Duration.ofMillis(2))
-                .failureMustBeRetried(e -> e.toString().contains("retriable"))
-                .handlers(
-                        ImmutableHandlers.<ApplicationException, String>builder()
-                                .onMaxAttemptsReached(e -> System.out.println("MaxAttemptsReached: " + e))
-                                .onNonRetriableError(e -> System.out.println("onNonRetriableError: " + e))
-                                .onRetriableError(e -> System.out.println("onRetriableError: " + e))
-                                .onSuccess(e -> System.out.println("onSuccess: " + e))
+        Retrier<AppException, String> retrier = Retrier
+                .withConfig(
+                        RetryConfig.<AppException, String>builder()
+                                .maxAttempts(3)
+                                .backoffFunction(attemptNr -> Duration.ofMillis(1))
+                                .retryFailureIf(e -> e.isRetriable)
+                                .handlers(testEventHandler)
                                 .build()
-                )
-                .build();
+                );
 
-        // execute the call via retrier
-        final Either<ApplicationException, String> finalResult = retrier.executeWithRetries(supplierOfResult);
+        // execute SUT
+        Either<AppException, String> finalResult = retrier.executeWithRetries(service);
 
-        if (finalResult.isRight()) {
-            System.out.println("Right! " + finalResult.get());
-        } else {
-            System.out.println("Left! " + finalResult.getLeft());
+        assertTrue(finalResult.isRight());
+        assertEquals(
+                constructExpectedEvents(serviceResponses),
+                testEventHandler.getActualEventsReceived()
+        );
+        assertEquals(RetrierScenario.SUCCESS, testEventHandler.lastEventType);
+    }
+
+    @Test
+    public void retryMaxAttempts() {
+        List<Either<AppException, String>> serviceResponses = List.of(
+                RESULT_FAIL_RETRIABLE,
+                RESULT_FAIL_RETRIABLE,
+                RESULT_FAIL_RETRIABLE,
+                RESULT_FAIL_RETRIABLE,
+                RESULT_FAIL_RETRIABLE
+        );
+
+        Supplier<Either<AppException, String>> service = createServiceThatReturns(serviceResponses);
+
+        Retrier<AppException, String> retrier = Retrier
+                .withConfig(
+                        RetryConfig.<AppException, String>builder()
+                                .maxAttempts(3)
+                                .backoffFunction(attemptNr -> Duration.ofMillis(1))
+                                .retryFailureIf(e -> e.isRetriable)
+                                .handlers(testEventHandler)
+                                .build()
+                );
+
+        Either<AppException, String> finalResult = retrier.executeWithRetries(service);
+
+        assertTrue(finalResult.isLeft());
+        assertEquals(
+                constructExpectedEvents(serviceResponses.take(3)),
+                testEventHandler.getActualEventsReceived()
+        );
+        assertEquals(RetrierScenario.MAX_RETRIED, testEventHandler.lastEventType);
+    }
+
+    @Test
+    public void successAfterRetries() {
+        List<Either<AppException, String>> serviceResponses = List.of(
+                RESULT_FAIL_RETRIABLE,
+                RESULT_FAIL_RETRIABLE,
+                RESULT_SUCCESS,
+                RESULT_FAIL_PERMANENTLY);
+
+        Supplier<Either<AppException, String>> service = createServiceThatReturns(serviceResponses);
+
+        Retrier<AppException, String> retrier = Retrier
+                .withConfig(
+                        RetryConfig.<AppException, String>builder()
+                                .maxAttempts(3)
+                                .backoffFunction(attemptNr -> Duration.ofMillis(1))
+                                .retryFailureIf(e -> e.isRetriable)
+                                .handlers(testEventHandler)
+                                .build()
+                );
+
+        Either<AppException, String> finalResult = retrier.executeWithRetries(service);
+
+        assertTrue(finalResult.isRight());
+        assertEquals(
+                constructExpectedEvents(serviceResponses.take(3)),
+                testEventHandler.getActualEventsReceived()
+        );
+        assertEquals(RetrierScenario.SUCCESS, testEventHandler.lastEventType);
+    }
+
+    @Test
+    public void failPermanent() {
+        List<Either<AppException, String>> serviceResponses = List.of(
+                RESULT_FAIL_RETRIABLE,
+                RESULT_FAIL_RETRIABLE,
+                RESULT_FAIL_PERMANENTLY);
+
+        Supplier<Either<AppException, String>> service = createServiceThatReturns(serviceResponses);
+
+        Retrier<AppException, String> retrier = Retrier
+                .withConfig(
+                        RetryConfig.<AppException, String>builder()
+                                .maxAttempts(3)
+                                .backoffFunction(attemptNr -> Duration.ofMillis(1))
+                                .retryFailureIf(e -> e.isRetriable)
+                                .handlers(testEventHandler)
+                                .build()
+                );
+
+        Either<AppException, String> finalResult = retrier.executeWithRetries(service);
+
+        assertTrue(finalResult.isLeft());
+        assertEquals(
+                constructExpectedEvents(serviceResponses.take(3)),
+                testEventHandler.getActualEventsReceived()
+        );
+        assertEquals(RetrierScenario.FAIL_PERMANENT, testEventHandler.lastEventType);
+    }
+
+    private Supplier<Either<AppException, String>> createServiceThatReturns(List<Either<AppException, String>> results) {
+        return results.iterator()::next;
+    }
+
+    private class TestEventHandler implements Retrier.Handlers<AppException, String> {
+        private java.util.List<Retrier.Attempt<AppException, String>> actualEventsReceived = new ArrayList<>();
+
+        private RetrierScenario lastEventType = null;
+
+        @Override
+        public void onRetriableError(Retrier.Attempt<AppException, String> attempt) {
+            actualEventsReceived.add(attempt);
+            assertThatPreviousAttemptWasRetriable(attempt);
+            this.lastEventType = RetrierScenario.RETRIABLE;
+        }
+
+        @Override
+        public void onNonRetriableError(Retrier.Attempt<AppException, String> attempt) {
+            actualEventsReceived.add(attempt);
+            assertThatPreviousAttemptWasRetriable(attempt);
+            this.lastEventType = RetrierScenario.FAIL_PERMANENT;
+
+        }
+
+        @Override
+        public void onMaxAttemptsReached(Retrier.Attempt<AppException, String> attempt) {
+            actualEventsReceived.add(attempt);
+            assertThatPreviousAttemptWasRetriable(attempt);
+            this.lastEventType = RetrierScenario.MAX_RETRIED;
+        }
+
+        @Override
+        public void onSuccess(Retrier.Attempt<AppException, String> attempt) {
+            actualEventsReceived.add(attempt);
+            assertThatPreviousAttemptWasRetriable(attempt);
+            this.lastEventType = RetrierScenario.SUCCESS;
+        }
+
+        private void assertThatPreviousAttemptWasRetriable(Retrier.Attempt<AppException, String> attempt) {
+            if (attempt.attemptNr() > 1) {
+                assertEquals(RetrierScenario.RETRIABLE, lastEventType);
+            }
+        }
+
+        private List getActualEventsReceived() {
+            return actualEventsReceived.stream().collect(List.collector());
         }
     }
 
-    public class SomeServiceWithExceptions {
-        int attempts = 0;
+    public List<Retrier.Attempt<AppException, String>> constructExpectedEvents(List<Either<AppException, String>> serviceResponses) {
+        return serviceResponses
+                .zip(io.vavr.collection.Stream.range(1, Integer.MAX_VALUE))
+                .map(tuple -> ImmutableAttempt.<AppException, String>builder()
+                        .attemptNr(tuple._2)
+                        .result(tuple._1)
+                        .build()
+                )
+                .toList();
+    }
 
-        private String callThatMayFail(String s) throws ApplicationException {
-            attempts++;
-            if (attempts >= 10) {
-                if (true) {
-                    throw new ApplicationException("RETRY_IMPOSSIBLE");
-                }
-                return "result of " + s;
-            }
-            throw new ApplicationException("retriable");
+    public class AppException extends RuntimeException {
+        private final boolean isRetriable;
+
+        public AppException(boolean isRetriable) {
+            super("Some Exception");
+            this.isRetriable = isRetriable;
         }
+
     }
 
 }
