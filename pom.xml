@@ -16,7 +16,7 @@
         <maven-dependency-plugin.version>3.1.1</maven-dependency-plugin.version>
 
         <immutables.version>2.7.4</immutables.version>
-        <junit.version>4.12</junit.version>
+        <junit.version>4.13.1</junit.version>
         <vavr.version>0.10.0</vavr.version>
     </properties>
 
